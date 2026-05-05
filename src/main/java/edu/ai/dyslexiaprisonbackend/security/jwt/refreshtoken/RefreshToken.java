@@ -29,6 +29,7 @@ public class RefreshToken {
     private Date expiresAt;
 
     @Column(nullable = false)
+    @Builder.Default
     private boolean revoked = false;
 
     public boolean isExpired() {

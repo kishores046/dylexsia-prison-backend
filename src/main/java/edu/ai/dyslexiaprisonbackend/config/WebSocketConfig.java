@@ -12,13 +12,11 @@ import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerCo
 
 /**
  * WebSocket Configuration for STOMP over WebSocket
- * 
  * Handles:
  * - STOMP endpoint registration (/ws/gaze)
  * - Message broker configuration (topics, queues)
  * - SockJS fallback for older browsers
  * - Channel interceptor registration for JWT auth
- * 
  * Production considerations:
  * - Simple broker suitable for single-instance (consider RabbitMQ for distributed)
  * - User destination prefix enables per-user queues (/user/queue/*)
@@ -52,6 +50,9 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     /**
      * Register STOMP endpoint with SockJS fallback
      * 
+     * FIX: Changed from wildcard "*" to explicit origins
+     * This prevents CORS vulnerabilities with credential-based connections
+     * 
      * SockJS provides fallback transports:
      * - WebSocket (primary)
      * - HTTP Long Polling
@@ -62,8 +63,13 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     public void registerStompEndpoints(StompEndpointRegistry registry) {
         registry
             .addEndpoint("/ws/gaze")
-            .setAllowedOrigins("*")  // Configure appropriately in production
-            .withSockJS()
+                .setAllowedOrigins(
+                        "http://localhost:8080",
+                        "http://127.0.0.1:8080",
+                        "http://localhost:3000",
+                        "http://127.0.0.1:3000"
+                )
+                .withSockJS()
             .setHeartbeatTime(25000)    // 25s heartbeat
             .setDisconnectDelay(5000);  // 5s disconnect delay
         
@@ -72,13 +78,12 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     /**
      * Configure channel interceptor for JWT authentication
-     * 
      * Intercepts all incoming messages on the WebSocket channel
      * to extract and validate JWT tokens before connection/message processing
      */
     @Override
     public void configureClientInboundChannel(ChannelRegistration registration) {
-        registration.interceptors((org.springframework.messaging.support.ChannelInterceptor) webSocketAuthInterceptor);
+        registration.interceptors(webSocketAuthInterceptor);
         log.info("✓ WebSocket auth interceptor configured for client inbound channel");
     }
 }

@@ -19,6 +19,17 @@ import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
 
+/**
+ * JWT Authentication Filter
+ * 
+ * Processes incoming HTTP requests with JWT Bearer tokens
+ * Validates tokens and sets up Spring Security context
+ * 
+ * SECURITY FIXES:
+ * - Does NOT log usernames (avoids sensitive data in logs)
+ * - Uses try-catch with detailed error logging
+ * - Checks token blacklist before validation
+ */
 @Slf4j
 @Component
 @AllArgsConstructor
@@ -26,7 +37,7 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 
     private JwtUtilService jwtUtil;
     private CustomUserDetailsService userDetailsService;
-    private TokenBlacklistService tokenBlacklistService; // Add this
+    private TokenBlacklistService tokenBlacklistService;
 
     @Override
     protected void doFilterInternal(@NonNull HttpServletRequest request,
@@ -42,16 +53,17 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             if (authHeader != null && authHeader.startsWith("Bearer ")) {
                 token = authHeader.substring(7);
 
-
+                // Check blacklist first (efficient)
                 if (tokenBlacklistService.isBlacklisted(token)) {
-                    response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+                    log.debug("⚠️ Token is blacklisted");
+                    filterChain.doFilter(request, response);
                     return;
                 }
 
                 try {
                     username = jwtUtil.extractUsername(token);
                 } catch (Exception e) {
-                    log.error("Error extracting username from token: {}", e.getMessage());
+                    log.debug("⚠️ Error extracting username from token: {}", e.getMessage());
                 }
             }
 
@@ -69,13 +81,13 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                     authToken.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
                     SecurityContextHolder.getContext().setAuthentication(authToken);
 
-                    log.info("✓ JWT validated successfully for user: {}", username);
+                    log.debug("✓ JWT validated successfully");
                 } else {
-                    log.error("✗ Invalid JWT token for user: {}", username);
+                    log.debug("⚠️ Invalid JWT token");
                 }
             }
         } catch (Exception e) {
-            log.error("JWT Authentication Error: {}", e.getMessage());
+            log.debug("⚠️ JWT Authentication Error: {}", e.getMessage());
         }
 
         filterChain.doFilter(request, response);

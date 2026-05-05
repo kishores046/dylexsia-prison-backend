@@ -3,6 +3,7 @@ package edu.ai.dyslexiaprisonbackend.controller.monitor;
 import edu.ai.dyslexiaprisonbackend.service.gaze.GazeDataService;
 import edu.ai.dyslexiaprisonbackend.service.gaze.GazeSessionContext;
 import edu.ai.dyslexiaprisonbackend.service.gaze.WebSocketActivityMonitor;
+import lombok.NonNull;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
@@ -13,14 +14,11 @@ import java.util.*;
 
 /**
  * WebSocket Monitoring API
- * 
  * Admin endpoints for monitoring WebSocket activity and debugging
- * 
  * Endpoints:
  * - GET /api/monitor/websocket/metrics - Global metrics
  * - GET /api/monitor/websocket/sessions - Active sessions
  * - GET /api/monitor/websocket/user/{username} - User metrics
- * 
  * Access: ADMIN role only
  */
 @RestController
@@ -47,7 +45,7 @@ public class WebSocketMonitorController {
      * Get all active sessions
      */
     @GetMapping("/sessions")
-    public ResponseEntity<Map<String, ?>> getActiveSessions() {
+    public ResponseEntity<@NonNull Map<String, ?>> getActiveSessions() {
         Map<String, Object> response = new HashMap<>();
         response.put("timestamp", System.currentTimeMillis());
         response.put("userMetrics", activityMonitor.getAllUserMetrics());
@@ -72,11 +70,11 @@ public class WebSocketMonitorController {
      * Get active sessions for a user
      */
     @GetMapping("/user/{username}/sessions")
-    public ResponseEntity<List<Map<String, Object>>> getUserSessions(@PathVariable String username) {
+    public ResponseEntity<@NonNull List<Map<String, Object>>> getUserSessions(@PathVariable String username) {
         List<GazeSessionContext> sessions = gazeDataService.getUserActiveSessions(username);
         
         List<Map<String, Object>> sessionSummaries = sessions.stream()
-                .map(session -> (Map<String, Object>) (Map<?,?>) Map.of(
+                .map(session -> (Map<String, Object>) Map.of(
                         "sessionId", session.getSessionId(),
                         "taskId", session.getTaskId(),
                         "durationMs", session.getDurationMs(),
@@ -95,7 +93,7 @@ public class WebSocketMonitorController {
      * Log metrics (for debugging)
      */
     @PostMapping("/log-metrics")
-    public ResponseEntity<String> logMetrics() {
+    public ResponseEntity<@NonNull String> logMetrics() {
         activityMonitor.logMetricsSummary();
         log.info("Admin triggered metrics logging");
         return ResponseEntity.ok("Metrics logged to stdout");
@@ -105,7 +103,7 @@ public class WebSocketMonitorController {
      * Get system health
      */
     @GetMapping("/health")
-    public ResponseEntity<Map<String, ?>> getHealth() {
+    public ResponseEntity<@NonNull Map<String, ?>> getHealth() {
         WebSocketActivityMonitor.GlobalMetrics metrics = activityMonitor.getGlobalMetrics();
         
         boolean healthy = metrics.getActiveConnections() >= 0 

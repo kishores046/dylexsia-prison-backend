@@ -1,16 +1,20 @@
 package edu.ai.dyslexiaprisonbackend.controller.websocket;
 
 import edu.ai.dyslexiaprisonbackend.dto.gaze.*;
+import edu.ai.dyslexiaprisonbackend.service.buffer.SessionBufferService;
 import edu.ai.dyslexiaprisonbackend.service.gaze.GazeDataService;
+import edu.ai.dyslexiaprisonbackend.service.websocket.SessionContext;
+import edu.ai.dyslexiaprisonbackend.service.websocket.SessionContextService;
 import edu.ai.dyslexiaprisonbackend.util.ratelimit.WebSocketRateLimiter;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.messaging.handler.annotation.MessageMapping;
 import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
-import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.messaging.simp.stomp.StompHeaderAccessor;
+
 import org.springframework.stereotype.Controller;
+import java.security.Principal;
 
 /**
  * STOMP Message Controller for Gaze Data Streaming
@@ -39,6 +43,8 @@ public class GazeController {
     private final SimpMessagingTemplate messagingTemplate;
     private final WebSocketRateLimiter rateLimiter;
     private final GazeDataService gazeDataService;
+    private final SessionContextService sessionContextService;
+    private final SessionBufferService sessionBufferService;
 
     /**
      * Handle incoming gaze frame
@@ -50,17 +56,26 @@ public class GazeController {
      * - Validation is lightweight
      * - Rate limiting is enforced
      * - Minimal logging (DEBUG only)
-     * - Frame is queued for ML pipeline
+     * - Frame is buffered for batch processing
      * 
      * @param frame GazeFrameDto with eye tracking data
-     * @param userDetails authenticated principal
+     * @param principal authenticated principal
+     * @param accessor StompHeaderAccessor to get connection ID
      */
     @MessageMapping("/gaze.frame")
     public void handleGazeFrame(
             @Payload GazeFrameDto frame,
-            @AuthenticationPrincipal UserDetails userDetails) {
+            Principal principal,
+            StompHeaderAccessor accessor) {
 
-        String username = userDetails.getUsername();
+        // Extract username from principal (may be null in WebSocket context)
+        String username = extractUsername(principal, accessor);
+        if (username == null) {
+            log.warn("✗ Frame received with no authenticated user");
+            return;
+        }
+        
+        String connectionId = accessor.getSessionId();
 
         // Rate limiting
         if (!rateLimiter.allowFrameMessage(username)) {
@@ -79,21 +94,38 @@ public class GazeController {
             return;
         }
 
-        // Debug logging (high volume - only when needed)
-        if (log.isDebugEnabled()) {
-            log.debug("✓ Received gaze frame from {}: frameId={}, confidence={}",
-                    username, frame.getFrameId(), frame.getConfidence());
+        // Get session context
+        var sessionOpt = sessionContextService.getSession(connectionId);
+        if (sessionOpt.isEmpty()) {
+            log.warn("✗ No active session for frame from user {}. "
+                    + "Call gaze.session.start first.", username);
+            sendAckResponse(username, frame.getFrameId(), "NO_SESSION",
+                    "Session not started. Call gaze.session.start first.");
+            return;
         }
 
-        // Queue frame for later ML pipeline processing
-        // Session ID is derived from current connection context
-        // For now, frames are buffered - in production, extract sessionId from header
-        String sessionId = extractSessionIdFromContext();  // implementation varies
-        gazeDataService.enqueueFrame(username, sessionId, frame);
+        SessionContext session = sessionOpt.get();
+        String sessionId = session.getSessionId();
+
+        // Debug logging (high volume - only when needed)
+        if (log.isDebugEnabled()) {
+            log.debug("✓ Received gaze frame from {}: frameId={}, confidence={}, "
+                    + "sessionId={}",
+                    username, frame.getFrameId(), frame.getConfidence(), sessionId);
+        }
+
+        // Add to buffer for batch processing
+        boolean buffered = sessionBufferService.addFrame(username, sessionId, frame);
+        if (!buffered) {
+            log.warn("✗ Failed to buffer frame for session: {}", sessionId);
+            sendAckResponse(username, frame.getFrameId(), "BUFFER_FULL",
+                    "Buffer full, please retry");
+            return;
+        }
 
         // Send acknowledgment
         sendAckResponse(username, frame.getFrameId(), "OK",
-                "Frame received and queued");
+                "Frame received and buffered");
     }
 
     /**
@@ -108,14 +140,23 @@ public class GazeController {
      * - Added to feature stream for ML
      * 
      * @param feature FeaturePayloadDto with detected feature
-     * @param userDetails authenticated principal
+     * @param principal authenticated principal
+     * @param accessor StompHeaderAccessor to get connection ID
      */
     @MessageMapping("/gaze.feature")
     public void handleGazeFeature(
             @Payload FeaturePayloadDto feature,
-            @AuthenticationPrincipal UserDetails userDetails) {
+            Principal principal,
+            StompHeaderAccessor accessor) {
 
-        String username = userDetails.getUsername();
+        // Extract username from principal (may be null in WebSocket context)
+        String username = extractUsername(principal, accessor);
+        if (username == null) {
+            log.warn("✗ Feature received with no authenticated user");
+            return;
+        }
+        
+        String connectionId = accessor.getSessionId();
 
         // Rate limiting (less strict for features)
         if (!rateLimiter.allowFeatureMessage(username)) {
@@ -134,40 +175,65 @@ public class GazeController {
             return;
         }
 
-        // Info logging (moderate volume)
-        log.info("✓ Received gaze feature from {}: type={}, duration={}ms",
-                username, feature.getFeatureType(), feature.getDuration());
+        // Get session context
+        var sessionOpt = sessionContextService.getSession(connectionId);
+        if (sessionOpt.isEmpty()) {
+            log.warn("✗ No active session for feature from user {}. "
+                    + "Call gaze.session.start first.", username);
+            sendAckResponse(username, feature.getFeatureId(), "NO_SESSION",
+                    "Session not started. Call gaze.session.start first.");
+            return;
+        }
 
-        // Enqueue feature for later ML pipeline processing
-        String sessionId = extractSessionIdFromContext();  // implementation varies
-        gazeDataService.enqueueFeature(username, sessionId, feature);
+        SessionContext session = sessionOpt.get();
+        String sessionId = session.getSessionId();
+
+        // Info logging (moderate volume)
+        log.info("✓ Received gaze feature from {}: type={}, duration={}ms, "
+                + "sessionId={}",
+                username, feature.getFeatureType(), feature.getDuration(), sessionId);
+
+        // Add to buffer for batch processing
+        boolean buffered = sessionBufferService.addFeature(username, sessionId, feature);
+        if (!buffered) {
+            log.warn("✗ Failed to buffer feature for session: {}", sessionId);
+            sendAckResponse(username, feature.getFeatureId(), "BUFFER_FULL",
+                    "Feature buffer full, please retry");
+            return;
+        }
 
         sendAckResponse(username, feature.getFeatureId(), "OK",
-                "Feature received and queued");
+                "Feature received and buffered");
     }
 
     /**
      * Handle session start
-     * 
      * Endpoint: /app/gaze.session.start
      * Publishes to: /user/queue/ack
-     * 
      * Marks the beginning of data collection:
      * - Session metadata (screen resolution, device)
      * - Task information
      * - Timestamp correlation
      * 
      * @param sessionStart SessionStartDto with session metadata
-     * @param userDetails authenticated principal
+     * @param principal authenticated principal
+     * @param accessor StompHeaderAccessor to get connection ID
      */
     @MessageMapping("/gaze.session.start")
     public void handleSessionStart(
             @Payload SessionStartDto sessionStart,
-            @AuthenticationPrincipal UserDetails userDetails) {
+           Principal principal,
+            StompHeaderAccessor accessor) {
 
-        String username = userDetails.getUsername();
+        // Extract username from principal (may be null in WebSocket context)
+        String username = extractUsername(principal, accessor);
+        if (username == null) {
+            log.warn("✗ Session start received with no authenticated user");
+            return;
+        }
+        
+        String connectionId = accessor.getSessionId();
 
-        // Validation
         if (sessionStart == null || !sessionStart.isValid()) {
             log.warn("✗ Invalid session start from user {}: {}", username,
                     sessionStart != null ? sessionStart.getSessionId() : "null");
@@ -176,38 +242,75 @@ public class GazeController {
             return;
         }
 
-        log.info("→ Session STARTED for user {}: sessionId={}, taskId={}", 
-                username, sessionStart.getSessionId(), sessionStart.getTaskId());
+        try {
+            // Create session in context manager
+            SessionContext context = sessionContextService.startSession(
+                    connectionId,
+                    sessionStart.getSessionId(),
+                    username,
+                    sessionStart.getTaskId(),
+                    sessionStart.getMetadata()
+            );
 
-        // Initialize session context
-        gazeDataService.startSession(username, sessionStart);
+            // FIX: Create buffer with taskId and metadata (not hardcoded)
+            sessionBufferService.getOrCreateBuffer(
+                    sessionStart.getSessionId(), 
+                    username,
+                    sessionStart.getTaskId(),
+                    sessionStart.getMetadata()
+            );
 
-        sendAckResponse(username, sessionStart.getSessionId(), "OK",
-                "Session started");
+            // Also register in legacy GazeDataService for metrics
+            gazeDataService.startSession(username, sessionStart);
+
+            log.info("→ Session STARTED for user {}: sessionId={}, taskId={}, "
+                    + "connectionId={}",
+                    username, sessionStart.getSessionId(), sessionStart.getTaskId(),
+                    connectionId);
+
+            sendAckResponse(username, sessionStart.getSessionId(), "OK",
+                    "Session started successfully");
+
+        } catch (IllegalStateException e) {
+            log.warn("⚠️ Session start rejected: {}", e.getMessage());
+            sendAckResponse(username, sessionStart.getSessionId(), "DUPLICATE",
+                    "Connection already has an active session");
+        } catch (Exception e) {
+            log.error("✗ Error starting session for user {}: {}", username,
+                    e.getMessage(), e);
+            sendAckResponse(username, sessionStart.getSessionId(), "ERROR",
+                    "Failed to start session");
+        }
     }
 
     /**
      * Handle session end
-     * 
      * Endpoint: /app/gaze.session.end
      * Publishes to: /user/queue/ack
-     * 
      * Marks end of data collection:
      * - Final frame count
      * - Aggregated metrics
      * - Signals ML pipeline to process
      * 
      * @param sessionEnd SessionEndDto with session summary
-     * @param userDetails authenticated principal
+     * @param principal authenticated principal
+     * @param accessor StompHeaderAccessor to get connection ID
      */
     @MessageMapping("/gaze.session.end")
     public void handleSessionEnd(
             @Payload SessionEndDto sessionEnd,
-            @AuthenticationPrincipal UserDetails userDetails) {
+            Principal principal,
+            StompHeaderAccessor accessor) {
 
-        String username = userDetails.getUsername();
+        // Extract username from principal (may be null in WebSocket context)
+        String username = extractUsername(principal, accessor);
+        if (username == null) {
+            log.warn("✗ Session end received with no authenticated user");
+            return;
+        }
+        
+        String connectionId = accessor.getSessionId();
 
-        // Validation
         if (sessionEnd == null || !sessionEnd.isValid()) {
             log.warn("✗ Invalid session end from user {}: {}", username,
                     sessionEnd != null ? sessionEnd.getSessionId() : "null");
@@ -216,15 +319,41 @@ public class GazeController {
             return;
         }
 
-        log.info("← Session ENDED for user {}: sessionId={}, frames={}, features={}, duration={}ms",
-                username, sessionEnd.getSessionId(), sessionEnd.getFrameCount(),
-                sessionEnd.getFeatureCount(), sessionEnd.getDurationMs());
+        try {
+            // End session in context manager
+            var sessionOpt = sessionContextService.endSession(
+                    connectionId,
+                    sessionEnd.getSessionId()
+            );
 
-        // Finalize session and trigger ML pipeline analysis
-        gazeDataService.endSession(username, sessionEnd);
+            if (sessionOpt.isEmpty()) {
+                log.warn("⚠️ Session not found or already ended: {}",
+                        sessionEnd.getSessionId());
+                sendAckResponse(username, sessionEnd.getSessionId(), "NO_SESSION",
+                        "Session not found");
+                return;
+            }
 
-        sendAckResponse(username, sessionEnd.getSessionId(), "OK",
-                "Session ended - analysis queued");
+            // Flush any remaining data from buffer
+            sessionBufferService.flush(sessionEnd.getSessionId(), "SESSION_END");
+
+            // Also end in legacy GazeDataService
+            gazeDataService.endSession(username, sessionEnd);
+
+            log.info("← Session ENDED for user {}: sessionId={}, frames={}, "
+                    + "features={}, duration={}ms",
+                    username, sessionEnd.getSessionId(), sessionEnd.getFrameCount(),
+                    sessionEnd.getFeatureCount(), sessionEnd.getDurationMs());
+
+            sendAckResponse(username, sessionEnd.getSessionId(), "OK",
+                    "Session ended - analysis queued");
+
+        } catch (Exception e) {
+            log.error("✗ Error ending session for user {}: {}", username,
+                    e.getMessage(), e);
+            sendAckResponse(username, sessionEnd.getSessionId(), "ERROR",
+                    "Failed to end session");
+        }
     }
 
     /**
@@ -250,19 +379,44 @@ public class GazeController {
     }
 
     /**
-     * Extract session ID from connection context
+     * Extract username from Principal or StompHeaderAccessor
      * 
-     * In production, this would be extracted from:
-     * - WebSocket connection headers
-     * - StompPrincipal attributes
-     * - User session store
+     * FIX: WebSocketAuthInterceptor now properly attaches authentication to ALL STOMP messages.
+     * For CONNECT: Direct principal injection works
+     * For subsequent messages: accessor.getUser() is populated by WebSocketAuthInterceptor
      * 
-     * For now, using a placeholder UUID
+     * @param principal optional Principal from parameter injection (CONNECT only)
+     * @param accessor StompHeaderAccessor containing cached authentication
+     * @return username or null if authentication not available
      */
-    private String extractSessionIdFromContext() {
-        // TODO: Implement proper session context management
-        // For now, return a placeholder - ideally stored in WebSocket session
-        return "default-session-id";
+    private String extractUsername(Principal principal, StompHeaderAccessor accessor) {
+        // Strategy 1: Try direct principal first (works for CONNECT frame)
+        if (principal != null) {
+            String name = principal.getName();
+            if (name != null && !name.isBlank()) {
+                log.debug("✓ Extracted username from principal parameter: {}", name);
+                return name;
+            }
+        }
+
+        // Strategy 2: Try extracting from accessor's user principal
+        // FIX: Now works for ALL messages because WebSocketAuthInterceptor attaches auth
+        if (accessor != null) {
+            Principal user = accessor.getUser();
+            if (user != null) {
+                String name = user.getName();
+                if (name != null && !name.isBlank()) {
+                    log.debug("✓ Extracted username from accessor.user: {}", name);
+                    return name;
+                }
+            }
+            log.warn("⚠️ accessor.getUser() returned null");
+        } else {
+            log.warn("⚠️ StompHeaderAccessor is null!");
+        }
+
+
+        return null;
     }
 }
 

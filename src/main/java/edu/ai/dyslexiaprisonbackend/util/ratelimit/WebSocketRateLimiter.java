@@ -13,13 +13,10 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * WebSocket Rate Limiter Service
- * 
  * Prevents frame flooding per user
  * Uses Guava RateLimiter with per-user limits
- * 
  * Default: 100 frames per second per user
  * Can be configured based on eyetracking device specs
- * 
  * Production notes:
  * - Cache entries expire after 1 hour of inactivity (cleanup)
  * - Each user has independent rate limiting
@@ -69,7 +66,6 @@ public class WebSocketRateLimiter {
 
     /**
      * Check if user can send a gaze feature
-     * 
      * Features are less frequent, so higher limit
      * 
      * @param username authenticated user

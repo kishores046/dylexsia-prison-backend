@@ -3,7 +3,8 @@ spring:
     name: dyslexia-backend-core
   profiles:
     active: dev
-
+server:
+  port: 8090
 
 ---
 spring:
@@ -11,10 +12,10 @@ spring:
     activate:
       on-profile: dev
   datasource:
-    url: ${DB_URL_DEV}
+    url: ${DB_URL_DEV:jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE}
     driver-class-name: org.h2.Driver
-    username: ${DB_USER_DEV}
-    password: ${DB_PASSWORD_DEV}
+    username: ${DB_USER_DEV:sa}
+    password: ${DB_PASSWORD_DEV:}
 
   h2:
     console:
@@ -34,68 +35,15 @@ spring:
 
 
 jwt:
-  secret: ${JWT_SECRET}
-  expiration: ${EXPIRATION}
-  issuer: ${ISSUER}
-  audience : ${AUDIENCE}
-  refresh-expiration: ${REFRESH_EXPIRATION}
+  secret: ${JWT_SECRET:ThisIsAVerySecureJwtSecretKeyFor256BitHS256AlgorithmMinimum32BytesLongForProduction}
+  expiration: ${EXPIRATION:900000}
+  issuer: ${ISSUER:dyslexsia-prison-backend}
+  audience: ${AUDIENCE:dyslexsia-prison-frontend}
+  refresh-expiration: ${REFRESH_EXPIRATION:604800000}
 
+ml:
+  service:
+    url: ${ML_SERVICE_URL:http://localhost:8000/analyze}
+    timeout: ${ML_SERVICE_TIMEOUT:2000}
+    retries: ${ML_SERVICE_RETRIES:1}
 
----
-spring:
-  config:
-    activate:
-      on-profile: prod
-
-  datasource:
-    url: ${DB_URL_PROD}
-    driver-class-name: org.h2.Driver
-    username: ${DB_USER_PROD}
-    password: ${DB_PASSWORD_PROD}
-
-  jpa:
-    show-sql: true
-    properties:
-      hibernate:
-        format_sql: true
-        dialect: org.hibernate.dialect.H2Dialect
-    hibernate:
-      ddl-auto: update
-
-
-
-jwt:
-  secret: ${JWT_SECRET}
-  expiration: ${EXPIRATION}
-  issuer: ${ISSUER}
-  audience : ${AUDIENCE}
-  refresh-expiration: ${REFRESH_EXPIRATION}
-
-
----
-
-spring:
-  config:
-    activate:
-      on-profile: dev
-  datasource:
-    url: ${DB_URL_TEST}
-    driver-class-name: org.h2.Driver
-    username: ${DB_USER_TEST}
-    password: ${DB_PASSWORD_TEST}
-
-  h2:
-    console:
-      enabled: true
-      path: /h2-console
-      settings:
-        web-allow-others: false
-
-  jpa:
-    show-sql: true
-    properties:
-      hibernate:
-        format_sql: true
-        dialect: org.hibernate.dialect.H2Dialect
-    hibernate:
-      ddl-auto: update
