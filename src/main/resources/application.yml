@@ -2,20 +2,60 @@ spring:
   application:
     name: dyslexia-backend-core
   profiles:
-    active: dev
+    active: ${PROFILE:dev}
+  
+  # Flyway configuration for schema migrations
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baselineOnMigrate: true
+    outOfOrder: false
+    validateOnMigrate: false  # Don't validate until after migration
+
 server:
-  port: 8090
+  port: ${SERVER_PORT:8090}
+
+# ============================================================================
+# ACTUATOR & OBSERVABILITY
+# ============================================================================
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus,metrics,info
+  endpoint:
+    health:
+      show-details: when-authorized
+      probes:
+        enabled: true
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+    web:
+      server:
+        request:
+          autotime:
+            enabled: true
+  health:
+    livenessState:
+      enabled: true
+    readinessState:
+      enabled: true
 
 ---
+# ============================================================================
+# DEVELOPMENT PROFILE - In-memory H2 database
+# ============================================================================
 spring:
   config:
     activate:
       on-profile: dev
   datasource:
-    url: ${DB_URL_DEV:jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE}
+    url: ${DB_URL_DEV:jdbc:h2:mem:testdb}
     driver-class-name: org.h2.Driver
-    username: ${DB_USER_DEV:sa}
-    password: ${DB_PASSWORD_DEV:}
+    username: ${DB_USER_DEV:ChinnaX}
+    password: ${DB_PASSWORD_DEV:Chinna2005}
 
   h2:
     console:
@@ -25,14 +65,17 @@ spring:
         web-allow-others: false
 
   jpa:
-    show-sql: true
+    show-sql: false
     properties:
       hibernate:
-        format_sql: true
+        format_sql: false
         dialect: org.hibernate.dialect.H2Dialect
     hibernate:
-      ddl-auto: update
-
+      ddl-auto: update # Flyway manages all schema updates
+  
+  flyway:
+    enabled: true
+    baselineOnMigrate: true
 
 jwt:
   secret: ${JWT_SECRET:ThisIsAVerySecureJwtSecretKeyFor256BitHS256AlgorithmMinimum32BytesLongForProduction}
@@ -44,6 +87,71 @@ jwt:
 ml:
   service:
     url: ${ML_SERVICE_URL:http://localhost:8000/analyze}
-    timeout: ${ML_SERVICE_TIMEOUT:2000}
+    timeout: ${ML_SERVICE_TIMEOUT:10000}
     retries: ${ML_SERVICE_RETRIES:1}
+  
+  # ========================================================================
+  # ML PIPELINE CONFIGURATION (tunable for development/testing)
+  # ========================================================================
+  pipeline:
+    # Minimum frames before first ML analysis (at 5 Hz: 30 frames = 6s)
+    # For dev/testing, use 10 frames (~2 seconds)
+    min-frames-for-first-analysis: ${ML_MIN_FRAMES_FIRST:10}
+    
+    # Resend threshold after first analysis (at 5 Hz: 50 frames = 10s)
+    resend-every-n-new-frames: ${ML_RESEND_EVERY_N:20}
+    
+    # Result delivery throttle (milliseconds) - prevent flooding
+    # 500ms between results for same user, unless it's first result
+    result-throttle-ms: ${ML_RESULT_THROTTLE_MS:500}
+
+---
+# ============================================================================
+# PRODUCTION PROFILE - PostgreSQL database
+# ============================================================================
+spring:
+  config:
+    activate:
+      on-profile: prod
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/dyslexia}
+    driver-class-name: org.postgresql.Driver
+    username: ${DB_USER:postgres}
+    password: ${DB_PASSWORD:password}
+    hikari:
+      maximum-pool-size: ${DB_POOL_SIZE:20}
+      minimum-idle: ${DB_POOL_MIN_IDLE:5}
+      connection-timeout: 20000
+      idle-timeout: 300000
+      max-lifetime: 1200000
+
+  jpa:
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: false
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+    hibernate:
+      ddl-auto: none  # Flyway manages all schema updates
+  
+  flyway:
+    enabled: true
+
+jwt:
+  secret: ${JWT_SECRET}
+  expiration: ${EXPIRATION:900000}
+  issuer: ${ISSUER:dyslexsia-prison-backend}
+  audience: ${AUDIENCE:dyslexsia-prison-frontend}
+  refresh-expiration: ${REFRESH_EXPIRATION:604800000}
+
+ml:
+  service:
+    url: ${ML_SERVICE_URL}
+    timeout: ${ML_SERVICE_TIMEOUT:10000}
+    retries: ${ML_SERVICE_RETRIES:3}
+  
+  pipeline:
+    min-frames-for-first-analysis: ${ML_MIN_FRAMES_FIRST:30}
+    resend-every-n-new-frames: ${ML_RESEND_EVERY_N:50}
+    result-throttle-ms: ${ML_RESULT_THROTTLE_MS:500}
 
