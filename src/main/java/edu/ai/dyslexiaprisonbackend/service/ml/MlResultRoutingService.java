@@ -3,6 +3,7 @@ package edu.ai.dyslexiaprisonbackend.service.ml;
 import edu.ai.dyslexiaprisonbackend.dto.ml.MlResultDto;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 
@@ -52,10 +53,12 @@ public class MlResultRoutingService {
     private final Map<String, AtomicLong> resultDeliveryCount = new ConcurrentHashMap<>();
     
     /**
-     * Minimum time between updates per user (milliseconds)
-     * Prevents rapid flooding of the same user
+     * FIX 2, 5: Make throttle interval configurable via application.properties
+     * For development: 100-200ms to see quick results
+     * For production: 500ms+ to prevent flooding
      */
-    private static final long MIN_UPDATE_INTERVAL_MS = 500;  // 500ms between updates
+    @Value("${ml.pipeline.result-throttle-ms:500}")
+    private long minUpdateIntervalMs;
     
     /**
      * Route ML result to correct user via WebSocket
@@ -134,35 +137,36 @@ public class MlResultRoutingService {
         }
     }
     
-    /**
-     * PHASE 8: Check if we should send result to user
-     * 
-     * Prevents flooding by:
-     * - Tracking last result timestamp
-     * - Enforcing minimum interval between updates
-     * - Allowing immediate first result
-     */
-    private boolean shouldSendResultToUser(String username) {
-        Long lastTimestamp = lastResultTimestamp.get(username);
-        
-        // First result ever - always send
-        if (lastTimestamp == null) {
-            return true;
-        }
-        
-        long now = System.currentTimeMillis();
-        long timeSinceLastResult = now - lastTimestamp;
-        
-        // Check if enough time has passed
-        boolean shouldSend = timeSinceLastResult >= MIN_UPDATE_INTERVAL_MS;
-        
-        if (!shouldSend) {
-            log.debug("⊘ Update suppressed for {}: only {}ms since last result",
-                    username, timeSinceLastResult);
-        }
-        
-        return shouldSend;
-    }
+     /**
+      * PHASE 8: Check if we should send result to user
+      * 
+      * Prevents flooding by:
+      * - Tracking last result timestamp
+      * - Enforcing minimum interval between updates
+      * - Allowing immediate first result
+      */
+     private boolean shouldSendResultToUser(String username) {
+         Long lastTimestamp = lastResultTimestamp.get(username);
+         
+         // First result ever - always send
+         if (lastTimestamp == null) {
+             return true;
+         }
+         
+         long now = System.currentTimeMillis();
+         long timeSinceLastResult = now - lastTimestamp;
+         
+         // Check if enough time has passed
+         boolean shouldSend = timeSinceLastResult >= minUpdateIntervalMs;
+         
+         if (!shouldSend) {
+             // FIX 5: Log suppression at WARN so it's visible in logs (not DEBUG)
+             log.warn("⊘ Update SUPPRESSED for {}: only {}ms since last result (throttle={}ms)",
+                     username, timeSinceLastResult, minUpdateIntervalMs);
+         }
+         
+         return shouldSend;
+     }
     
     /**
      * Update last result timestamp for user (for flooding prevention)

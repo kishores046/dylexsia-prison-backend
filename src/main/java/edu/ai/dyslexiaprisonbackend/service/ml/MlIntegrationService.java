@@ -26,7 +26,12 @@ public class MlIntegrationService {
     @Value("${ml.service.url:http://localhost:8000/analyze}")
     private String mlServiceUrl;
 
-    @Value("${ml.service.timeout:2000}")
+    /**
+     * FIX 6: Timeout for ML service (can be tuned via environment)
+     * Default: 10 seconds (increased from 2s to account for slower ML service startup)
+     * For production: set to 15-30 seconds depending on service SLA
+     */
+    @Value("${ml.service.timeout:10000}")
     private long timeoutMs;
 
     @Value("${ml.service.retries:1}")
@@ -112,13 +117,24 @@ public class MlIntegrationService {
         }
     }
 
-    private void logError(Throwable error, String sessionId) {
-        // Don't log full stack for 4xx — the onStatus handler already logged the body
-        if (error instanceof WebClientResponseException ex && ex.getStatusCode().is4xxClientError()) {
-            log.warn("✗ ML service client error for {}: {} (see above for response body)",
-                    sessionId, ex.getStatusCode());
-        } else {
-            log.error("✗ ML service error for {}: {}", sessionId, error.getMessage(), error);
-        }
-    }
+     private void logError(Throwable error, String sessionId) {
+         // FIX 6: Better error classification for visibility
+         String errorMsg = error != null ? error.getMessage() : "unknown error";
+         String errorClass = error != null ? error.getClass().getSimpleName() : "UnknownException";
+         
+         // Check for timeout patterns (ReadTimeoutException, TimeoutException, etc.)
+         if (errorMsg != null && errorMsg.toLowerCase().contains("timeout")
+                 || errorClass.contains("TimeoutException")) {
+             log.error("✗ ML service TIMEOUT for {} after {}ms — service may be slow or down",
+                     sessionId, timeoutMs);
+         } else if (error instanceof WebClientResponseException ex && ex.getStatusCode().is4xxClientError()) {
+             log.warn("✗ ML service CLIENT ERROR for {}: {} (see above for response body)",
+                     sessionId, ex.getStatusCode());
+         } else if (error instanceof WebClientResponseException ex && ex.getStatusCode().is5xxServerError()) {
+             log.error("✗ ML service SERVER ERROR for {}: {}", sessionId, ex.getStatusCode());
+         } else {
+             log.error("✗ ML service NETWORK ERROR for {} ({}): {}", 
+                     sessionId, errorClass, errorMsg, error);
+         }
+     }
 }

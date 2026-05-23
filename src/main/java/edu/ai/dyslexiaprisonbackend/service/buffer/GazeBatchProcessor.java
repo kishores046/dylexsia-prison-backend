@@ -11,6 +11,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
@@ -36,12 +37,12 @@ public class GazeBatchProcessor {
     // Used to avoid hammering the ML service every 2s with near-identical features.
     private final Map<String, Integer> lastSentAtFrameCount = new ConcurrentHashMap<>();
 
-    // At 5 Hz capture: 30 frames = 6 seconds minimum before first ML call.
-    private static final int MIN_FRAMES_FOR_ML = 30;
+    // FIX 1 & 2: Make thresholds configurable (tunable via application.properties)
+    @Value("${ml.pipeline.min-frames-for-first-analysis:10}")
+    private int minFramesForMl;
 
-    // After the first send, only resend when we have 50 new frames worth of data.
-    // At 5 Hz that's ~10 additional seconds between calls — enough for features to shift meaningfully.
-    private static final int RESEND_EVERY_N_NEW_FRAMES = 50;
+    @Value("${ml.pipeline.resend-every-n-new-frames:20}")
+    private int resendEveryNNewFrames;
 
     // All 7 features the Python schema requires — validated before every ML call.
     private static final List<String> REQUIRED_FEATURES = List.of(
@@ -132,33 +133,33 @@ public class GazeBatchProcessor {
             boolean isSessionEnd = "SESSION_END".equalsIgnoreCase(trigger);
 
             // --- STEP 2: Decide whether to call ML service ---
-            // Rules (in priority order):
-            //   a) Always send on SESSION_END regardless of frame count
-            //   b) Skip until we have MIN_FRAMES_FOR_ML frames (first meaningful window)
-            //   c) After first send, only resend every RESEND_EVERY_N_NEW_FRAMES new frames
-            //      to avoid sending near-identical features every 2 seconds
-            if (!isSessionEnd) {
-                int lastSentAt = lastSentAtFrameCount.getOrDefault(sessionId, 0);
-                boolean firstSend = (lastSentAt == 0);
-                boolean enoughForFirstSend = (totalFrames >= MIN_FRAMES_FOR_ML);
-                boolean enoughNewFramesSinceLastSend =
-                        (totalFrames - lastSentAt) >= RESEND_EVERY_N_NEW_FRAMES;
+             // Rules (in priority order):
+             //   a) Always send on SESSION_END regardless of frame count
+             //   b) Skip until we have MIN_FRAMES_FOR_ML frames (first meaningful window)
+             //   c) After first send, only resend every RESEND_EVERY_N_NEW_FRAMES new frames
+             //      to avoid sending near-identical features every 2 seconds
+             if (!isSessionEnd) {
+                 int lastSentAt = lastSentAtFrameCount.getOrDefault(sessionId, 0);
+                 boolean firstSend = (lastSentAt == 0);
+                 boolean enoughForFirstSend = (totalFrames >= minFramesForMl);
+                 boolean enoughNewFramesSinceLastSend =
+                         (totalFrames - lastSentAt) >= resendEveryNNewFrames;
 
-                if (firstSend && !enoughForFirstSend) {
-                    log.debug("⏭ Skipping ML — only {} frames accumulated, need {}+ for first send",
-                            totalFrames, MIN_FRAMES_FOR_ML);
-                    return;
-                }
+                 if (firstSend && !enoughForFirstSend) {
+                     log.debug("⏭ Skipping ML — only {} frames accumulated, need {}+ for first send",
+                             totalFrames, minFramesForMl);
+                     return;
+                 }
 
-                if (!firstSend && !enoughNewFramesSinceLastSend) {
-                    log.debug("⏭ Skipping ML — {} total frames, only {} new since last send "
-                                    + "(need {}+ new frames between sends)",
-                            totalFrames,
-                            totalFrames - lastSentAt,
-                            RESEND_EVERY_N_NEW_FRAMES);
-                    return;
-                }
-            }
+                 if (!firstSend && !enoughNewFramesSinceLastSend) {
+                     log.debug("⏭ Skipping ML — {} total frames, only {} new since last send "
+                                     + "(need {}+ new frames between sends)",
+                             totalFrames,
+                             totalFrames - lastSentAt,
+                             resendEveryNNewFrames);
+                     return;
+                 }
+             }
 
             // --- STEP 3: Aggregate features over ALL accumulated frames ---
             log.info("✓ Aggregating {} accumulated frames, {} features for session {}",
@@ -171,15 +172,18 @@ public class GazeBatchProcessor {
             );
 
             // --- STEP 4: Validate all 7 required features are present ---
-            // Catches aggregator bugs before they reach the ML service (avoids 422).
-            List<String> missing = REQUIRED_FEATURES.stream()
-                    .filter(k -> !aggregatedFeatures.containsKey(k))
-                    .toList();
-            if (!missing.isEmpty()) {
-                log.error("✗ Aggregated features missing required keys: {} — skipping ML call",
-                        missing);
-                return;
-            }
+             // Catches aggregator bugs before they reach the ML service (avoids 422).
+             List<String> missing = REQUIRED_FEATURES.stream()
+                     .filter(k -> !aggregatedFeatures.containsKey(k))
+                     .toList();
+             if (!missing.isEmpty()) {
+                 // FIX 3: Send specific error to frontend so user knows why ML didn't run
+                 log.error("✗ Aggregated features missing required keys: {} — reporting to user",
+                         missing);
+                 resultRoutingService.sendErrorToUser(username, 
+                         "ML feature extraction failed — missing fields: " + String.join(", ", missing));
+                 return;
+             }
 
             log.info("✓ Features ready: {}", aggregatedFeatures);
 
@@ -193,49 +197,64 @@ public class GazeBatchProcessor {
                     .build();
 
             // --- STEP 6: Record that we're sending now, before the async call ---
-            // Must happen before the async call so concurrent batches for the same session
-            // don't both pass the frame-count check and double-send.
-            lastSentAtFrameCount.put(sessionId, totalFrames);
+             // Must happen before the async call so concurrent batches for the same session
+             // don't both pass the frame-count check and double-send.
+             lastSentAtFrameCount.put(sessionId, totalFrames);
 
-            // --- STEP 7: Clean up accumulators on SESSION_END ---
-            // Do this BEFORE the async call so cleanup isn't skipped if the call throws.
-            if (isSessionEnd) {
-                sessionFrameAccumulator.remove(sessionId);
-                sessionFeatureAccumulator.remove(sessionId);
-                lastSentAtFrameCount.remove(sessionId);
-                log.info("✓ Session state cleaned up for: {}", sessionId);
-            }
-
-            // --- STEP 8: Send to ML service asynchronously ---
-            mlIntegrationService.analyzeSessionAsync(mlRequest)
-                    .thenAccept(mlResult -> {
-                        if (mlResult == null) {
-                            log.warn("✗ Null ML result for session: {}", sessionId);
-                            return;
-                        }
-                        if (!mlResult.isValid()) {
-                            log.warn("✗ Invalid ML result for session: {} — result: {}",
-                                    sessionId, mlResult);
-                            return;
-                        }
-                        boolean routed = resultRoutingService.routeResultToUser(
-                                batch.getUsername(), mlResult);
-                        if (routed) {
-                            log.info("✓ ML result routed to user: {} | riskScore={}, classification={}",
-                                    batch.getUsername(),
-                                    mlResult.getRiskScore(),
-                                    mlResult.getClassification());
-                        } else {
-                            log.warn("⚠️ ML result routing failed for user: {}", batch.getUsername());
-                        }
-                    })
-                    .exceptionally(error -> {
-                        log.error("✗ ML pipeline error for session {}: {}",
-                                sessionId, error.getMessage(), error);
-                        resultRoutingService.sendErrorToUser(
-                                username, "ML analysis failed: " + error.getMessage());
-                        return null;
-                    });
+             // --- STEP 7: Send to ML service asynchronously ---
+             // FIX 4: CRITICAL — Move accumulator cleanup to AFTER the async call completes,
+             // NOT before. If SESSION_END and ML response takes 500ms, the session state
+             // must still exist when the result finally arrives.
+             mlIntegrationService.analyzeSessionAsync(mlRequest)
+                     .thenAccept(mlResult -> {
+                         try {
+                             if (mlResult == null) {
+                                 log.warn("✗ Null ML result for session: {}", sessionId);
+                                 return;
+                             }
+                             if (!mlResult.isValid()) {
+                                 log.warn("✗ Invalid ML result for session: {} — result: {}",
+                                         sessionId, mlResult);
+                                 return;
+                             }
+                             boolean routed = resultRoutingService.routeResultToUser(
+                                     batch.getUsername(), mlResult);
+                             if (routed) {
+                                 log.info("✓ ML result routed to user: {} | riskScore={}, classification={}",
+                                         batch.getUsername(),
+                                         mlResult.getRiskScore(),
+                                         mlResult.getClassification());
+                             } else {
+                                 log.warn("⚠️ ML result routing failed for user: {}", batch.getUsername());
+                             }
+                         } finally {
+                             // FIX 4: Clean up accumulators AFTER result successfully routed,
+                             // not before. This ensures SESSION_END result doesn't race cleanup.
+                             if (isSessionEnd) {
+                                 sessionFrameAccumulator.remove(sessionId);
+                                 sessionFeatureAccumulator.remove(sessionId);
+                                 lastSentAtFrameCount.remove(sessionId);
+                                 log.info("✓ Session state cleaned up for: {}", sessionId);
+                             }
+                         }
+                     })
+                     .exceptionally(error -> {
+                         try {
+                             log.error("✗ ML pipeline error for session {}: {}",
+                                     sessionId, error.getMessage(), error);
+                             resultRoutingService.sendErrorToUser(
+                                     username, "ML analysis failed: " + error.getMessage());
+                         } finally {
+                             // FIX 4: Also clean up on error if SESSION_END
+                             if (isSessionEnd) {
+                                 sessionFrameAccumulator.remove(sessionId);
+                                 sessionFeatureAccumulator.remove(sessionId);
+                                 lastSentAtFrameCount.remove(sessionId);
+                                 log.info("✓ Session state cleaned up for: {} (after error)", sessionId);
+                             }
+                         }
+                         return null;
+                     });
 
         } catch (Exception e) {
             log.error("✗ Error processing batch for session: {}", sessionId, e);
