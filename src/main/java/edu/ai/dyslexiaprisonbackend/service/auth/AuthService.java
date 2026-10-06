@@ -97,11 +97,13 @@ public class AuthService {
             throw new AuthenticationFailedException("Email already registered");
         }
 
+
+        validateRegistrationRole(request.role());
         User user = new User();
         user.setUsername(request.username());
         user.setEmail(request.email());
         user.setPassword(passwordEncoder.encode(request.password()));
-        user.setRoleType(RoleType.STUDENT);
+        user.setRoleType(request.role());
         user.setDateOfBirth(request.dateOfBirth());
         user.setGender(request.gender().charAt(0));
         user.setUserStatus(UserStatus.ACTIVE);
@@ -194,5 +196,21 @@ public class AuthService {
                 "Bearer",
                 newAccessExp.getTime()
         );
+    }
+
+
+    private void validateRegistrationRole(RoleType role) {
+
+        if (role == null) {
+            throw new AuthenticationFailedException(
+                    "Role is required"
+            );
+        }
+
+        if (role == RoleType.ADMIN) {
+            throw new AuthenticationFailedException(
+                    "Admin registration is not allowed"
+            );
+        }
     }
 }

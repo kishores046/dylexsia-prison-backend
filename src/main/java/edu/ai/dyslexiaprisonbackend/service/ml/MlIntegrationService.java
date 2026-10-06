@@ -37,6 +37,10 @@ public class MlIntegrationService {
     @Value("${ml.service.retries:1}")
     private int maxRetries;
 
+
+    private final SessionResultStore sessionResultStore;
+    private final MlResultRoutingService resultRoutingService;
+
     public CompletableFuture<MlResultDto> analyzeSessionAsync(MlRequestDto request) {
         if (request == null || !request.isValid()) {
             log.warn("⚠️ Invalid ML request, skipping: {}", request);
@@ -55,8 +59,7 @@ public class MlIntegrationService {
                 .contentType(MediaType.APPLICATION_JSON)
                 .bodyValue(request)
                 .retrieve()
-                // FIX: surface the 422 response body in the error so you can see what's wrong
-                .onStatus(
+              .onStatus(
                         status -> status.is4xxClientError() || status.is5xxServerError(),
                         clientResponse -> clientResponse.bodyToMono(String.class)
                                 .defaultIfEmpty("<empty body>")
@@ -71,11 +74,21 @@ public class MlIntegrationService {
                 )
                 .bodyToMono(MlResultDto.class)
                 .timeout(Duration.ofMillis(timeoutMs))
-                // FIX: only retry on network/connection errors, NOT on 4xx/5xx responses.
-                // Retrying a 422 is pointless — the same bad payload will always get the same rejection.
                 .retryWhen(Retry.max(maxRetries)
                         .filter(throwable -> isRetryable(throwable)))
-                .doOnSuccess(result -> logSuccess(result, request.getSessionId()))
+                .doOnSuccess(result ->
+                        {
+                            logSuccess(result, request.getSessionId());
+                            if (result != null && result.isValid()) {
+                                boolean routed =
+                                        resultRoutingService.routeResultToUser(request.getUsername(), result);
+                                sessionResultStore.store(
+                                        request.getSessionId(),
+                                        request.getUsername(),
+                                        result
+                                );
+                            }
+                        })
                 .doOnError(error -> logError(error, request.getSessionId()))
                 .onErrorResume(error -> Mono.just(getSafeDefaultResult(request.getSessionId())))
                 .toFuture();

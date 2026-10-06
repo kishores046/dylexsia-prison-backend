@@ -25,6 +25,8 @@ public class GazeBatchProcessor {
     private final GazeFeatureAggregator featureAggregator;
     private final MlIntegrationService mlIntegrationService;
     private final MlResultRoutingService resultRoutingService;
+    private final edu.ai.dyslexiaprisonbackend.repository.SessionResultRepository sessionResultRepository;
+    private final edu.ai.dyslexiaprisonbackend.repository.UserRepository userRepository;
 
     // Session-level frame/feature accumulators.
     // Paper requires ~300 frames over 60s — per-batch (5-7 frames) stats are meaningless.
@@ -217,6 +219,33 @@ public class GazeBatchProcessor {
                                          sessionId, mlResult);
                                  return;
                              }
+
+                             // STEP 1: Persist SessionResult row BEFORE routing to WebSocket client
+                             Long studentId = userRepository.findByEmailOrUsername(batch.getUsername(), batch.getUsername())
+                                     .map(edu.ai.dyslexiaprisonbackend.model.user.User::getId)
+                                     .orElse(1L);
+
+                             Double ruleScore = 0.0;
+                             Double rfScore = 0.0;
+                             if (mlResult.getBreakdown() != null) {
+                                 ruleScore = mlResult.getBreakdown().getOrDefault("ruleScore", mlResult.getBreakdown().getOrDefault("rule", 0.0));
+                                 rfScore = mlResult.getBreakdown().getOrDefault("rfScore", mlResult.getBreakdown().getOrDefault("rf", 0.0));
+                             }
+
+                             edu.ai.dyslexiaprisonbackend.model.result.SessionResult sessionResult = edu.ai.dyslexiaprisonbackend.model.result.SessionResult.builder()
+                                     .sessionId(mlResult.getSessionId() != null ? mlResult.getSessionId() : sessionId)
+                                     .studentId(studentId)
+                                     .timestamp(java.time.LocalDateTime.now())
+                                     .riskScore(mlResult.getRiskScoreNormalized())
+                                     .classification(edu.ai.dyslexiaprisonbackend.model.result.SessionClassification.fromString(mlResult.getClassification()))
+                                     .ruleScore(ruleScore)
+                                     .rfScore(rfScore)
+                                     .build();
+
+                             sessionResultRepository.save(sessionResult);
+                             log.info("✓ SessionResult persisted: studentId={}, sessionId={}, riskScore={}, classification={}",
+                                     studentId, sessionResult.getSessionId(), sessionResult.getRiskScore(), sessionResult.getClassification());
+
                              boolean routed = resultRoutingService.routeResultToUser(
                                      batch.getUsername(), mlResult);
                              if (routed) {

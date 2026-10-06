@@ -43,9 +43,7 @@ public class AdminDashboardController {
     private final FallbackModeService fallbackModeService;
     private final SessionBufferService bufferService;
     
-    // ========================================================================
-    // DASHBOARD
-    // ========================================================================
+
     
     /**
      * GET /api/admin/dashboard
@@ -96,10 +94,7 @@ public class AdminDashboardController {
         return ResponseEntity.ok(dashboard);
     }
     
-    // ========================================================================
-    // METRICS
-    // ========================================================================
-    
+
     /**
      * GET /api/admin/metrics
      * Returns detailed metrics for Grafana or custom dashboards

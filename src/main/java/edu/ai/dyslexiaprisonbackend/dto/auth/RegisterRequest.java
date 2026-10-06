@@ -20,5 +20,6 @@ public record RegisterRequest( @NotBlank
                                LocalDate dateOfBirth,
                                @NotBlank
                                @Pattern(regexp = "[MFO]")
-                               String gender) {
+                               String gender,
+                               @NotNull RoleType role) {
 }

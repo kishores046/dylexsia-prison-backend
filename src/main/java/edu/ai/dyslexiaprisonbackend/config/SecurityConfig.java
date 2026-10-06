@@ -4,11 +4,11 @@ import edu.ai.dyslexiaprisonbackend.security.jwt.JwtAuthFilter;
 import edu.ai.dyslexiaprisonbackend.security.jwt.RestAuthenticationEntryPoint;
 import edu.ai.dyslexiaprisonbackend.security.service.CustomUserDetailsService;
 import lombok.RequiredArgsConstructor;
+
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
-import org.springframework.security.access.hierarchicalroles.RoleHierarchy;
-import org.springframework.security.access.hierarchicalroles.RoleHierarchyImpl;
+
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.AuthenticationProvider;
 import org.springframework.security.authentication.dao.DaoAuthenticationProvider;
@@ -16,182 +16,204 @@ import org.springframework.security.config.annotation.authentication.configurati
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
-import org.springframework.security.config.annotation.web.configurers.CsrfConfigurer;
-import org.springframework.security.config.annotation.web.configurers.FormLoginConfigurer;
 import org.springframework.security.config.annotation.web.configurers.HeadersConfigurer;
+
 import org.springframework.security.config.http.SessionCreationPolicy;
-import org.springframework.security.core.annotation.AnnotationTemplateExpressionDefaults;
+
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
+
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
 import java.util.List;
 
+
 @Configuration
-@EnableMethodSecurity
 @EnableWebSecurity
+@EnableMethodSecurity
 @RequiredArgsConstructor
 public class SecurityConfig {
-
 
     private final RestAuthenticationEntryPoint restAuthenticationEntryPoint;
     private final CustomUserDetailsService customUserDetailsService;
     private final JwtAuthFilter jwtAuthFilter;
 
     @Bean
-    public SecurityFilterChain studentSecurityFilterChain(HttpSecurity http){
+    @Order(1)
+    public SecurityFilterChain devToolsSecurityFilterChain(
+            HttpSecurity http) throws Exception {
 
-        return http.securityMatcher("/api/student/**")
-                .csrf(CsrfConfigurer::disable)
-                .formLogin(FormLoginConfigurer::disable)
-                .httpBasic(AbstractHttpConfigurer::disable)
-                .cors(cors -> cors.configurationSource(corsConfigurationSource()))
-                .sessionManagement(session ->
-                        session.sessionCreationPolicy(SessionCreationPolicy.STATELESS)
+        return http
+                .securityMatcher(
+                        "/h2-console/**",
+                        "/swagger-ui/**",
+                        "/v3/api-docs/**",
+                        "/api-docs/**"
                 )
-                .exceptionHandling(httpSecurityExceptionHandlingConfigurer -> httpSecurityExceptionHandlingConfigurer.authenticationEntryPoint(restAuthenticationEntryPoint))
-                .authorizeHttpRequests(auth->
-                        auth.requestMatchers("/api/auth/**").permitAll()
-                                .requestMatchers("/ws/**").permitAll()
-                                .anyRequest().hasRole("STUDENT")
-                ).addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class).build();
+
+                .authorizeHttpRequests(auth ->
+                        auth.anyRequest().hasRole("ADMIN")
+                )
+
+                .headers(headers ->
+                        headers.frameOptions(
+                                HeadersConfigurer.FrameOptionsConfig::disable
+                        )
+                )
+
+                .csrf(AbstractHttpConfigurer::disable)
+
+                .build();
     }
 
-//    @Bean
-//    @Order(3)
-//    public SecurityFilterChain parentSecurityFilterChain(HttpSecurity http){
-//
-//        return http.securityMatcher("/api/parent/**")
-//                .csrf(CsrfConfigurer::disable)
-//                .formLogin(FormLoginConfigurer::disable)
-//                .httpBasic(AbstractHttpConfigurer::disable)
-//                .sessionManagement(session ->
-//                        session.sessionCreationPolicy(SessionCreationPolicy.STATELESS)
-//                )
-//                .exceptionHandling(httpSecurityExceptionHandlingConfigurer -> httpSecurityExceptionHandlingConfigurer.authenticationEntryPoint(restAuthenticationEntryPoint))
-//                .authorizeHttpRequests(auth->
-//                        auth.requestMatchers("/api/auth/**").permitAll()
-//                                .anyRequest().hasRole("PARENT")
-//                ).addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class)
-//                .build();
-//    }
-//
-//
-//
-//    @Bean
-//    @Order(2)
-//    public SecurityFilterChain teacherSecurityFilterChain(HttpSecurity http){
-//
-//        return http.securityMatcher("/api/teacher/**")
-//                .csrf(CsrfConfigurer::disable)
-//                .formLogin(FormLoginConfigurer::disable)
-//                .httpBasic(AbstractHttpConfigurer::disable)
-//                .sessionManagement(session ->
-//                        session.sessionCreationPolicy(SessionCreationPolicy.STATELESS)
-//                )
-//                .exceptionHandling(httpSecurityExceptionHandlingConfigurer -> httpSecurityExceptionHandlingConfigurer.authenticationEntryPoint(restAuthenticationEntryPoint))
-//                .authorizeHttpRequests(auth->
-//                        auth.requestMatchers("/api/auth/**").permitAll()
-//                                .anyRequest().hasRole("TEACHER")
-//                ).addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class).build();
-//    }
-//
-//
-//    @Bean
-//    @Order(1)
-//    public SecurityFilterChain adminSecurityFilterChain(HttpSecurity http){
-//
-//        return http.securityMatcher("/api/admin/**")
-//                .csrf(CsrfConfigurer::disable)
-//                .formLogin(FormLoginConfigurer::disable)
-//                .httpBasic(AbstractHttpConfigurer::disable)
-//                .sessionManagement(session ->
-//                        session.sessionCreationPolicy(SessionCreationPolicy.STATELESS)
-//                )
-//                .exceptionHandling(httpSecurityExceptionHandlingConfigurer -> httpSecurityExceptionHandlingConfigurer.authenticationEntryPoint(restAuthenticationEntryPoint))
-//                .authorizeHttpRequests(auth-> auth
-//                        .requestMatchers("/api/auth/**").permitAll()
-//                        .anyRequest().hasRole("ADMIN")
-//                ).addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class).build();
-//    }
-
-
-
     @Bean
-    @Order(0)
-    public SecurityFilterChain devTools(HttpSecurity http) throws Exception {
-        return http.securityMatcher("/h2-console/**", "/swagger-ui/**", "/api-docs/**")
-                .authorizeHttpRequests(auth -> auth.anyRequest().hasRole("ADMIN"))
-                .headers(h -> h.frameOptions(HeadersConfigurer.FrameOptionsConfig::disable))
+    @Order(2)
+    public SecurityFilterChain apiSecurityFilterChain(
+            HttpSecurity http) throws Exception {
+
+        return http
+
+                .securityMatcher("/api/**")
+
                 .csrf(AbstractHttpConfigurer::disable)
+
+                .formLogin(AbstractHttpConfigurer::disable)
+
+                .httpBasic(AbstractHttpConfigurer::disable)
+
+                .cors(cors ->
+                        cors.configurationSource(
+                                corsConfigurationSource()
+                        )
+                )
+
+                .sessionManagement(session ->
+                        session.sessionCreationPolicy(
+                                SessionCreationPolicy.STATELESS
+                        )
+                )
+
+                .exceptionHandling(exception ->
+                        exception.authenticationEntryPoint(
+                                restAuthenticationEntryPoint
+                        )
+                )
+
+                .authorizeHttpRequests(auth -> auth
+                        .requestMatchers("/api/auth/**")
+                        .permitAll()
+                        .anyRequest()
+                        .authenticated()
+                )
+
+                .addFilterBefore(
+                        jwtAuthFilter,
+                        UsernamePasswordAuthenticationFilter.class
+                )
+
                 .build();
     }
 
 
 
     @Bean
-    public PasswordEncoder passwordEncoder(){
+    @Order(3)
+    public SecurityFilterChain webSocketSecurityFilterChain(
+            HttpSecurity http) throws Exception {
+
+        return http
+
+                .securityMatcher("/ws/**")
+
+                .csrf(AbstractHttpConfigurer::disable)
+
+                .authorizeHttpRequests(auth ->
+                        auth.anyRequest().permitAll()
+                )
+
+                .build();
+    }
+
+
+    @Bean
+    public PasswordEncoder passwordEncoder() {
         return new BCryptPasswordEncoder();
     }
 
+
+
     @Bean
     public AuthenticationManager authenticationManager(
-            AuthenticationConfiguration configuration) throws Exception {
+            AuthenticationConfiguration configuration)
+            throws Exception {
+
         return configuration.getAuthenticationManager();
     }
 
 
     @Bean
-    public RoleHierarchy roleHierarchy(){
-        return RoleHierarchyImpl.withDefaultRolePrefix()
-                .role("ADMIN").implies("TEACHER","PARENT")
-                .role("TEACHER").implies("STUDENT")
-                .role("PARENT").implies("STUDENT")
-                .build();
+    public AuthenticationProvider authenticationProvider() {
+
+        DaoAuthenticationProvider provider =
+                new DaoAuthenticationProvider(
+                        customUserDetailsService
+                );
+
+        provider.setPasswordEncoder(passwordEncoder());
+
+        return provider;
     }
-
-
-    @Bean
-    public AnnotationTemplateExpressionDefaults annotationTemplateExpressionDefaults(){
-        return new AnnotationTemplateExpressionDefaults();
-    }
-
-
-    @Bean
-    public AuthenticationProvider authenticationProvider(){
-        DaoAuthenticationProvider authenticationProvider=new DaoAuthenticationProvider(customUserDetailsService);
-        authenticationProvider.setPasswordEncoder(passwordEncoder());
-        return authenticationProvider;
-    }
-
 
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
-        CorsConfiguration configuration = new CorsConfiguration();
 
-        // FIX: CRITICAL SECURITY ISSUE
-        // Cannot use "*" with allowCredentials(true) - violates CORS spec
-        // Must specify explicit origins for credential-based requests
-        configuration.setAllowedOrigins(List.of(
-                "http://localhost:8080",
-                "http://127.0.0.1:8080",
-                "http://localhost:3000",
-                "http://127.0.0.1:3000"
-        ));
+        CorsConfiguration configuration =
+                new CorsConfiguration();
 
-        configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"));
-        configuration.setAllowedHeaders(List.of("*"));
+        configuration.setAllowedOrigins(
+                List.of(
+                        "http://localhost:3000",
+                        "http://127.0.0.1:3000",
+
+                        "http://localhost:8080",
+                        "http://127.0.0.1:8080"
+                )
+        );
+
+        configuration.setAllowedMethods(
+                List.of(
+                        "GET",
+                        "POST",
+                        "PUT",
+                        "DELETE",
+                        "PATCH",
+                        "OPTIONS"
+                )
+        );
+
+        configuration.setAllowedHeaders(
+                List.of("*")
+        );
+
         configuration.setAllowCredentials(true);
-        configuration.setMaxAge(3600L); // 1 hour
 
-        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
-        source.registerCorsConfiguration("/**", configuration);
+        configuration.setMaxAge(3600L);
+
+        UrlBasedCorsConfigurationSource source =
+                new UrlBasedCorsConfigurationSource();
+
+        source.registerCorsConfiguration(
+                "/**",
+                configuration
+        );
+
         return source;
     }
-
 }
